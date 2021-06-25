@@ -6,24 +6,22 @@
 #include "stm32f7xx_ll_exti.h"
 #include "stm32f7xx_ll_spi.h"
 #include "stm32f7xx_ll_pwr.h"
-#include "stm32f7xx_ll_dma.h"
 
 uint8_t ubButtonPress = 0;
 
-uint8_t aTxBuffer[] = "**** SPI_TwoBoards_FullDuplex_DMA communication **** SPI_TwoBoards_FullDuplex_DMA communication **** SPI_TwoBoards_FullDuplex_DMA communication ****";
+uint8_t aTxBuffer[] = "**** SPI_TwoBoards_FullDuplex_IT communication **** SPI_TwoBoards_FullDuplex_IT communication **** SPI_TwoBoards_FullDuplex_IT communication ****";
 uint8_t ubNbDataToTransmit = sizeof(aTxBuffer);
-uint8_t ubTransmissionComplete = 0;
+uint8_t ubTransmitIndex = 0;
 
 uint8_t aRxBuffer[sizeof(aTxBuffer)];
 uint8_t ubNbDataToReceive = sizeof(aTxBuffer);
-uint8_t ubReceptionComplete = 0;
+uint8_t ubReceiveIndex = 0;
 
 #define LED_PORT                GPIOB
 #define LED_PIN                 LL_GPIO_PIN_0
 #define LED_PORT_CLK_ENABLE()	LL_AHB1_GRP1_EnableClock(LL_AHB1_GRP1_PERIPH_GPIOB)
 
 void     SystemClock_Config(void);
-void     Configure_DMA(void);
 void     Configure_SPI(void);
 void     Activate_SPI(void);
 void     WaitAndCheckEndOfTransfer(void);
@@ -62,9 +60,6 @@ int main(void)
 	/* Configure the SPI1 parameters */
 	Configure_SPI();
 
-	/* Configure DMA channels for the SPI1  */
-	Configure_DMA();
-
 	/* Enable the SPI1 peripheral */
 	Activate_SPI();
 
@@ -72,54 +67,6 @@ int main(void)
 
 	for (;;)
 		__WFI();
-}
-
-void Configure_DMA(void)
-{
-	/* DMA2 used for SPI1 Transmission
-	 * DMA2 used for SPI1 Reception
-	 */
-	/* (1) Enable the clock of DMA2 and DMA2 */
-	LL_AHB1_GRP1_EnableClock(LL_AHB1_GRP1_PERIPH_DMA2);
-
-	/* (2) Configure NVIC for DMA transfer complete/error interrupts */
-	NVIC_SetPriority(DMA2_Stream2_IRQn, 0);
-	NVIC_EnableIRQ(DMA2_Stream2_IRQn);
-	NVIC_SetPriority(DMA2_Stream3_IRQn, 0);
-	NVIC_EnableIRQ(DMA2_Stream3_IRQn);
-
-	/* (3) Configure the DMA2_Stream2 functional parameters */
-	LL_DMA_ConfigTransfer(DMA2,
-			LL_DMA_STREAM_2,
-			LL_DMA_DIRECTION_PERIPH_TO_MEMORY | LL_DMA_PRIORITY_HIGH | LL_DMA_MODE_NORMAL |
-			LL_DMA_PERIPH_NOINCREMENT | LL_DMA_MEMORY_INCREMENT |
-			LL_DMA_PDATAALIGN_BYTE | LL_DMA_MDATAALIGN_BYTE);
-	LL_DMA_ConfigAddresses(DMA2,
-			LL_DMA_STREAM_2,
-			LL_SPI_DMA_GetRegAddr(SPI1), (uint32_t)aRxBuffer,
-			LL_DMA_GetDataTransferDirection(DMA2, LL_DMA_STREAM_2));
-	LL_DMA_SetDataLength(DMA2, LL_DMA_STREAM_2, ubNbDataToReceive);
-
-
-	LL_DMA_SetChannelSelection(DMA2, LL_DMA_STREAM_2, LL_DMA_CHANNEL_3);
-
-	/* (4) Configure the DMA2_Stream3 functional parameters */
-	LL_DMA_ConfigTransfer(DMA2,
-			LL_DMA_STREAM_3,
-			LL_DMA_DIRECTION_MEMORY_TO_PERIPH | LL_DMA_PRIORITY_HIGH | LL_DMA_MODE_NORMAL |
-			LL_DMA_PERIPH_NOINCREMENT | LL_DMA_MEMORY_INCREMENT |
-			LL_DMA_PDATAALIGN_BYTE | LL_DMA_MDATAALIGN_BYTE);
-	LL_DMA_ConfigAddresses(DMA2, LL_DMA_STREAM_3, (uint32_t)aTxBuffer, LL_SPI_DMA_GetRegAddr(SPI1),
-			LL_DMA_GetDataTransferDirection(DMA2, LL_DMA_STREAM_3));
-	LL_DMA_SetDataLength(DMA2, LL_DMA_STREAM_3, ubNbDataToTransmit);
-
-	LL_DMA_SetChannelSelection(DMA2, LL_DMA_STREAM_3, LL_DMA_CHANNEL_3);
-
-	/* (5) Enable DMA interrupts complete/error */
-	LL_DMA_EnableIT_TC(DMA2, LL_DMA_STREAM_2);
-	LL_DMA_EnableIT_TE(DMA2, LL_DMA_STREAM_2);
-	LL_DMA_EnableIT_TC(DMA2, LL_DMA_STREAM_3);
-	LL_DMA_EnableIT_TE(DMA2, LL_DMA_STREAM_3);
 }
 
 void Configure_SPI(void)
@@ -141,6 +88,14 @@ void Configure_SPI(void)
 	LL_GPIO_SetPinSpeed(GPIOA, LL_GPIO_PIN_7, LL_GPIO_SPEED_FREQ_HIGH);
 	LL_GPIO_SetPinPull(GPIOA, LL_GPIO_PIN_7, LL_GPIO_PULL_DOWN);
 
+	/* (2) Configure NVIC for SPI1 transfer complete/error interrupts **********/
+	/* Set priority for SPI1_IRQn */
+	NVIC_SetPriority(SPI1_IRQn, 0);
+	/* Enable SPI1_IRQn           */
+	NVIC_EnableIRQ(SPI1_IRQn);
+
+	/* (3) Configure SPI1 functional parameters ********************************/
+
 	/* Enable the peripheral clock of GPIOA */
 	LL_APB2_GRP1_EnableClock(LL_APB2_GRP1_PERIPH_SPI1);
 
@@ -155,36 +110,37 @@ void Configure_SPI(void)
 	LL_SPI_SetNSSMode(SPI1, LL_SPI_NSS_SOFT);
 	LL_SPI_SetRxFIFOThreshold(SPI1, LL_SPI_RX_FIFO_TH_QUARTER);
 
-	/* Configure SPI1 DMA transfer interrupts */
-	/* Enable DMA RX Interrupt */
-	LL_SPI_EnableDMAReq_RX(SPI1);
-	/* Enable DMA TX Interrupt */
-	LL_SPI_EnableDMAReq_TX(SPI1);
+	/* Configure SPI1 transfer interrupts */
+	/* Enable RXNE  Interrupt             */
+	LL_SPI_EnableIT_RXNE(SPI1);
+	/* Enable TXE   Interrupt             */
+	LL_SPI_EnableIT_TXE(SPI1);
+	/* Enable Error Interrupt             */
+	LL_SPI_EnableIT_ERR(SPI1);
 }
 
 void Activate_SPI(void)
 {
 	/* Enable SPI1 */
 	LL_SPI_Enable(SPI1);
-	/* Enable DMA Channels */
-	LL_DMA_EnableStream(DMA2, LL_DMA_STREAM_2);
-	LL_DMA_EnableStream(DMA2, LL_DMA_STREAM_3);
 }
 
 void WaitAndCheckEndOfTransfer(void)
 {
 	/* 1 - Wait end of transmission */
-	while (ubTransmissionComplete != 1)
+	while (ubTransmitIndex != ubNbDataToTransmit)
 	{
 	}
-	/* Disable DMA2 Tx Channel */
-	LL_DMA_DisableStream(DMA2, LL_DMA_STREAM_3);
+	/* Disable TXE Interrupt */
+	LL_SPI_DisableIT_TXE(SPI1);
+
 	/* 2 - Wait end of reception */
-	while (ubReceptionComplete != 1)
+	while (ubNbDataToReceive > ubReceiveIndex)
 	{
 	}
-	/* Disable DMA2 Rx Channel */
-	LL_DMA_DisableStream(DMA2, LL_DMA_STREAM_2);
+	/* Disable RXNE Interrupt */
+	LL_SPI_DisableIT_RXNE(SPI1);
+
 	/* 3 - Compare Transmit data to receive data */
 	if(Buffercmp8((uint8_t*)aTxBuffer, (uint8_t*)aRxBuffer, ubNbDataToTransmit))
 	{
@@ -195,6 +151,7 @@ void WaitAndCheckEndOfTransfer(void)
 		/* Turn On Led if data are well received */
 	}
 }
+
 
 uint8_t Buffercmp8(uint8_t* pBuffer1, uint8_t* pBuffer2, uint8_t BufferLength)
 {
@@ -265,21 +222,26 @@ void SystemClock_Config(void)
 	SystemCoreClock = 216000000;
 }
 
-void DMA2_ReceiveComplete_Callback(void)
+
+void  SPI1_Rx_Callback(void)
 {
-	ubReceptionComplete = 1;
+	aRxBuffer[ubReceiveIndex++] = LL_SPI_ReceiveData8(SPI1);
 }
 
-void DMA2_TransmitComplete_Callback(void)
+void  SPI1_Tx_Callback(void)
 {
-	ubTransmissionComplete = 1;
+	LL_SPI_TransmitData8(SPI1, ubTransmitIndex++);
 }
 
 void SPI1_TransferError_Callback(void)
 {
-	LL_DMA_DisableStream(DMA2, LL_DMA_STREAM_2);
+	/* Disable RXNE  Interrupt             */
+	LL_SPI_DisableIT_RXNE(SPI1);
 
-	LL_DMA_DisableStream(DMA2, LL_DMA_STREAM_3);
+	/* Disable TXE   Interrupt             */
+	LL_SPI_DisableIT_TXE(SPI1);
+
+	/* Set LED1 to Blinking mode to indicate error occurs */
 }
 
 static void CPU_CACHE_Enable(void)
@@ -291,3 +253,26 @@ static void CPU_CACHE_Enable(void)
 	SCB_EnableDCache();
 }
 
+void SPI1_IRQHandler(void)
+{
+  /* Check RXNE flag value in ISR register */
+  if(LL_SPI_IsActiveFlag_RXNE(SPI1))
+  {
+    /* Call function Slave Reception Callback */
+    SPI1_Rx_Callback();
+    LL_GPIO_TogglePin(LED_PORT, LED_PIN);
+  }
+  /* Check RXNE flag value in ISR register */
+  else if(LL_SPI_IsActiveFlag_TXE(SPI1))
+  {
+    /* Call function Slave Reception Callback */
+    SPI1_Tx_Callback();
+    LL_GPIO_TogglePin(LED_PORT, LED_PIN);
+  }
+  /* Check STOP flag value in ISR register */
+  else if(LL_SPI_IsActiveFlag_OVR(SPI1))
+  {
+    /* Call Error function */
+    SPI1_TransferError_Callback();
+  }
+}
